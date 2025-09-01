@@ -262,40 +262,27 @@ def build_sidebar_navigation(issues: List[Issue]) -> Dict[str, str]:
     sidebar_html.append(f'<div class="nav-section">')
     sidebar_html.append(f'<h3>All Issues ({len(issues)})</h3>')
     sidebar_html.append(f'<ul class="nav-list">')
-    for issue in sorted(issues, key=lambda x: x.number):
+    # Sort by creation date, newest first (same as main content)
+    for issue in sorted(issues, key=lambda x: x.created_at, reverse=True):
         anchor = f"issue-{issue.number}"
         state_class = issue.state
         sidebar_html.append(f'<li><a href="#{anchor}" class="{state_class}">#{issue.number}: {html.escape(issue.title[:50])}{"..." if len(issue.title) > 50 else ""}</a></li>')
     sidebar_html.append(f'</ul>')
     sidebar_html.append(f'</div>')
     
-    # By labels
-    if len(label_groups) > 1:  # More than just unlabeled
-        sidebar_html.append(f'<div class="nav-section">')
-        sidebar_html.append(f'<h3>By Labels</h3>')
-        for label_name, label_issues in sorted(label_groups.items()):
-            if label_name == 'unlabeled':
-                continue
-            sidebar_html.append(f'<details>')
-            sidebar_html.append(f'<summary>{html.escape(label_name)} ({len(label_issues)})</summary>')
-            sidebar_html.append(f'<ul class="nav-list">')
-            for issue in sorted(label_issues, key=lambda x: x.number):
-                anchor = f"issue-{issue.number}"
-                state_class = issue.state
-                sidebar_html.append(f'<li><a href="#{anchor}" class="{state_class}">#{issue.number}: {html.escape(issue.title[:40])}{"..." if len(issue.title) > 40 else ""}</a></li>')
-            sidebar_html.append(f'</ul>')
-            sidebar_html.append(f'</details>')
-        sidebar_html.append(f'</div>')
+    # Remove label groups from sidebar - they're now in the main header as filter chips
     
-    # By milestones
-    if len(milestone_groups) > 1:  # More than just "No Milestone"
+    # Keep milestones in sidebar but make it optional
+    if len(milestone_groups) > 1 and any(m != 'No Milestone' for m in milestone_groups.keys()):
         sidebar_html.append(f'<div class="nav-section">')
-        sidebar_html.append(f'<h3>By Milestones</h3>')
+        sidebar_html.append(f'<h3>Milestones</h3>')
         for milestone, milestone_issues in sorted(milestone_groups.items()):
+            if milestone == 'No Milestone':
+                continue
             sidebar_html.append(f'<details>')
             sidebar_html.append(f'<summary>{html.escape(milestone)} ({len(milestone_issues)})</summary>')
             sidebar_html.append(f'<ul class="nav-list">')
-            for issue in sorted(milestone_issues, key=lambda x: x.number):
+            for issue in sorted(milestone_issues, key=lambda x: x.created_at, reverse=True):
                 anchor = f"issue-{issue.number}"
                 state_class = issue.state
                 sidebar_html.append(f'<li><a href="#{anchor}" class="{state_class}">#{issue.number}: {html.escape(issue.title[:40])}{"..." if len(issue.title) > 40 else ""}</a></li>')
@@ -318,16 +305,44 @@ def build_html(owner: str, repo: str, issues: List[Issue], include_comments: boo
     # Generate CXML text for LLM view
     cxml_text = generate_cxml_text(issues, owner, repo)
     
+    # Sort issues by creation date (newest first)
+    issues_sorted = sorted(issues, key=lambda x: x.created_at, reverse=True)
+    
+    # Collect unique labels for filter chips
+    all_labels = set()
+    for issue in issues:
+        for label in issue.labels:
+            all_labels.add(label['name'])
+    
+    # Generate filter chips HTML
+    filter_chips = []
+    filter_chips.append('<div class="filter-chip" onclick="filterIssues(\"all\")">ALL ISSUES</div>')
+    filter_chips.append('<div class="filter-chip" onclick="filterIssues(\"open\")">OPEN</div>')
+    filter_chips.append('<div class="filter-chip" onclick="filterIssues(\"closed\")">CLOSED</div>')
+    # Add ALL labels as chips (not just common ones) - this replaces the sidebar labels
+    for label_name in sorted(all_labels):
+        safe_label = html.escape(label_name).replace(' ', '-').replace('/', '-').replace('(', '').replace(')', '').lower()
+        filter_chips.append(f'<div class="filter-chip" data-filter="label-{safe_label}" onclick="filterIssues(\"label-{safe_label}\")">{html.escape(label_name).upper()}</div>')
+    filter_chips_html = ''.join(filter_chips)
+    
     # Render issue cards
     issue_cards = []
-    for issue in sorted(issues, key=lambda x: x.number):
+    for issue in issues_sorted:
         anchor = f"issue-{issue.number}"
         
         # Labels
         labels_html = generate_labels_html(issue.labels)
         
-        # Body content
-        body_html = render_markdown_text(issue.body)
+        # Body content with read more functionality
+        body_text = issue.body
+        body_html = render_markdown_text(body_text)
+        
+        # Add read more if body is long
+        body_id = f"body-{issue.number}"
+        if len(body_text) > 500:  # If body is longer than 500 chars
+            body_html = f'<div class="issue-body collapsed" id="{body_id}">{body_html}</div><button class="read-more-btn" onclick="toggleReadMore(\'{body_id}\', this)">READ MORE...</button>'
+        else:
+            body_html = f'<div class="issue-body">{body_html}</div>'
         
         # Comments
         comments_html = ""
@@ -354,7 +369,7 @@ def build_html(owner: str, repo: str, issues: List[Issue], include_comments: boo
         state_class = "open" if issue.state == "open" else "closed"
         state_icon = "🟢" if issue.state == "open" else "🔴"
         
-        issue_cards.append(f'''
+        issue_card_html = f'''
 <section class="issue-card {state_class}" id="{anchor}">
     <div class="issue-header">
         <h2>
@@ -371,13 +386,12 @@ def build_html(owner: str, repo: str, issues: List[Issue], include_comments: boo
         {labels_html}
         {milestone_html}
     </div>
-    <div class="issue-body">
-        {body_html}
-    </div>
+    {body_html}
     {comments_html}
-    <div class="back-top"><a href="#top">↑ Back to top</a></div>
+    <div class="back-top"><a href="#top">BACK TO TOP</a></div>
 </section>
-        ''')
+        '''
+        issue_cards.append(issue_card_html)
     
     repo_url = f"https://github.com/{owner}/{repo}"
     
@@ -388,188 +402,789 @@ def build_html(owner: str, repo: str, issues: List[Issue], include_comments: boo
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GitHub Issues - {html.escape(owner)}/{html.escape(repo)}</title>
 <style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html {{ overflow-x: hidden; }}
+  body {{ overflow-x: hidden; }}
+  
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    margin: 0; padding: 0; line-height: 1.6;
-    background-color: #fafbfc;
+    font-family: 'JetBrains Mono', 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    margin: auto; padding: 0; line-height: 1.4;
+    background: #ffffff;
+    min-height: 100vh;
+    font-weight: bold;
+    color: #000000;
   }}
   .container {{ max-width: 1200px; margin: 0 auto; padding: 0 1rem; }}
   
+  /* Brutalist CSS classes */
+  .brutalist-border {{
+    border: 4px solid #000000;
+  }}
+  
+  .brutalist-shadow {{
+    box-shadow: 8px 8px 0px 0px rgba(0,0,0,1);
+  }}
+  
   /* Layout with sidebar */
-  .page {{ display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 0; min-height: 100vh; }}
+  .page {{ 
+    display: block; 
+    min-height: 100vh;
+    overflow-x: hidden;
+    max-width: 1200px;
+    margin: 0 auto;
+    width: 100%;
+    position: relative;
+  }}
   
   #sidebar {{
-    position: sticky; top: 0; align-self: start;
-    height: 100vh; overflow-y: auto;
-    border-right: 1px solid #e1e4e8; background: #f6f8fa;
+    position: fixed; 
+    top: 0; 
+    left: 0;
+    width: 280px;
+    height: 100vh; 
+    overflow-y: auto; 
+    overflow-x: hidden;
+    background: #000000;
+    border-right: 4px solid #000000;
     padding: 1rem;
+    box-shadow: 8px 0px 0px 0px rgba(0,0,0,1);
+    z-index: 1000;
   }}
-  #sidebar h3 {{ margin: 1.5rem 0 0.5rem 0; font-size: 0.9rem; color: #586069; text-transform: uppercase; }}
+  
+  /* Ensure sidebar stays fixed with custom scrollbar */
+  #sidebar::-webkit-scrollbar {{
+    width: 8px;
+  }}
+  #sidebar::-webkit-scrollbar-track {{
+    background: #000000;
+  }}
+  #sidebar::-webkit-scrollbar-thumb {{
+    background: #facc15;
+    border: 1px solid #000000;
+  }}
+  #sidebar h3 {{ 
+    margin: 1.5rem 0 0.8rem 0; 
+    font-size: 0.9rem; 
+    color: #ffffff;
+    text-transform: uppercase; 
+    font-weight: 900;
+    letter-spacing: 2px;
+    font-family: 'JetBrains Mono', monospace;
+  }}
   #sidebar h3:first-child {{ margin-top: 0; }}
   
-  .nav-section {{ margin-bottom: 1.5rem; }}
+  .nav-section {{ margin-bottom: 2rem; }}
   .nav-list {{ list-style: none; padding: 0; margin: 0; }}
-  .nav-list li {{ margin: 0.25rem 0; }}
+  .nav-list li {{ margin: 0.5rem 0; }}
   .nav-list a {{ 
-    text-decoration: none; color: #0366d6; display: block;
-    padding: 0.25rem 0.5rem; border-radius: 6px; font-size: 0.85rem;
+    text-decoration: none; 
+    color: #ffffff;
+    display: block;
+    padding: 0.8rem; 
+    border: 2px solid #ffffff; 
+    font-size: 0.75rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: #000000;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
   }}
-  .nav-list a:hover {{ background-color: #e1e4e8; }}
-  .nav-list a.open {{ border-left: 3px solid #28a745; }}
-  .nav-list a.closed {{ border-left: 3px solid #d73a49; }}
+  .nav-list a:hover {{ 
+    background: #ffffff;
+    color: #000000;
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }}
+  .nav-list a.open {{ 
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #ffffff;
+  }}
+  .nav-list a.closed {{ 
+    background: #facc15;
+    border-color: #facc15;
+    color: #000000;
+  }}
   
-  details {{ margin: 0.5rem 0; }}
-  details summary {{ cursor: pointer; font-weight: 500; padding: 0.25rem; }}
-  details summary:hover {{ background-color: #e1e4e8; border-radius: 6px; }}
+  details {{ margin: 0.8rem 0; }}
+  details summary {{ 
+    cursor: pointer; 
+    font-weight: 900; 
+    padding: 0.8rem;
+    color: #ffffff;
+    border: 2px solid #ffffff;
+    background: #000000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 0.8rem;
+  }}
+  details summary:hover {{ 
+    background: #ffffff;
+    color: #000000;
+    transform: translate(2px, 2px);
+  }}
   
-  main.container {{ padding: 1rem; background: white; }}
+  main.container {{ 
+    margin-left: 280px;
+    padding: 1rem; 
+    background: #ffffff;
+    border-left: 4px solid #000000;
+    overflow-x: hidden;
+    word-wrap: break-word;
+    min-width: 0;
+    width: auto;
+  }}
   
   .header {{ 
-    background: white; border-bottom: 1px solid #e1e4e8; 
-    padding: 1rem 0; margin-bottom: 1.5rem;
+    background: #000000;
+    border: 4px solid #000000;
+    box-shadow: 8px 8px 0px 0px rgba(0,0,0,1);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    color: #ffffff;
+    overflow-x: hidden;
+    width: 100%;
   }}
-  .repo-info {{ color: #586069; }}
-  .stats {{ margin-top: 0.5rem; display: flex; gap: 1rem; }}
-  .stat {{ padding: 0.5rem 1rem; background: #f6f8fa; border-radius: 6px; font-size: 0.9rem; }}
-  .stat.open {{ border-left: 4px solid #28a745; }}
-  .stat.closed {{ border-left: 4px solid #d73a49; }}
+  
+  /* Search functionality */
+  .search-container {{
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+  }}
+  .search-input {{
+    width: 100%;
+    max-width: 300px;
+    padding: 0.8rem;
+    border: 4px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: bold;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+  }}
+  .search-input::placeholder {{
+    color: #666666;
+    text-transform: uppercase;
+  }}
+  .search-input:focus {{
+    outline: none;
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }}
+  .header h1 {{
+    font-size: 2rem;
+    font-weight: 900;
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #ffffff;
+    font-family: 'JetBrains Mono', monospace;
+    word-wrap: break-word;
+  }}
+  .repo-info {{ color: #ffffff; font-size: 1rem; font-weight: bold; }}
+  .repo-info a {{ color: #facc15; text-decoration: underline; font-weight: bold; }}
+  .repo-info a:hover {{ color: #ffffff; background: #facc15; padding: 0 4px; }}
+  .stats {{ 
+    margin-top: 1rem; 
+    display: flex; 
+    gap: 0.8rem; 
+    flex-wrap: wrap;
+    align-items: center;
+  }}
+  .stat {{ 
+    padding: 0.6rem 1rem; 
+    background: #ffffff;
+    border: 2px solid #000000;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+    font-size: 0.8rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #000000;
+    font-family: 'JetBrains Mono', monospace;
+  }}
+  .stat.open {{ 
+    background: #dc2626;
+    color: #ffffff;
+    border-color: #dc2626;
+  }}
+  .stat.closed {{ 
+    background: #facc15;
+    color: #000000;
+    border-color: #facc15;
+  }}
+  
+  /* Filter chips */
+  .filter-chips {{
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+  }}
+  .chips-label {{
+    color: #ffffff;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 900;
+    font-size: 0.8rem;
+    letter-spacing: 1px;
+    margin-right: 0.5rem;
+    flex-shrink: 0;
+  }}
+  .filter-chip {{
+    padding: 0.4rem 0.8rem;
+    background: #facc15;
+    border: 2px solid #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+    font-size: 0.7rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace;
+    color: #000000;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }}
+  .filter-chip:hover {{
+    background: #000000;
+    color: #ffffff;
+    transform: translate(1px, 1px);
+    box-shadow: none;
+  }}
+  .filter-chip.active {{
+    background: #000000;
+    color: #ffffff;
+  }}
   
   /* View toggle */
   .view-toggle {{
-    margin: 1rem 0;
+    margin: 1.5rem 0;
     display: flex;
     gap: 0.5rem;
     align-items: center;
+    justify-content: flex-start;
   }}
   .toggle-btn {{
-    padding: 0.5rem 1rem;
-    border: 1px solid #d1d5da;
-    background: white;
+    padding: 0.8rem 1.2rem;
+    border: 4px solid #000000;
+    background: #ffffff;
     cursor: pointer;
-    border-radius: 6px;
-    font-size: 0.9rem;
+    font-size: 0.8rem;
+    font-weight: 900;
+    color: #000000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
   }}
   .toggle-btn.active {{
-    background: #0366d6;
-    color: white;
-    border-color: #0366d6;
+    background: #000000;
+    color: #ffffff;
+    transform: translate(2px, 2px);
+    box-shadow: none;
   }}
-  .toggle-btn:hover:not(.active) {{ background: #f6f8fa; }}
+  .toggle-btn:hover:not(.active) {{ 
+    background: #facc15;
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }}
   
   /* Issue cards */
   .issue-card {{
-    background: white; border: 1px solid #e1e4e8;
-    border-radius: 6px; margin-bottom: 1rem; padding: 1.5rem;
-    box-shadow: 0 1px 0 rgba(27,31,35,0.04);
+    background: #ffffff;
+    border: 4px solid #000000;
+    margin-bottom: 1rem; 
+    padding: 1.5rem;
+    box-shadow: 8px 8px 0px 0px rgba(0,0,0,1);
+    position: relative;
+    overflow-x: hidden;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
   }}
-  .issue-card.open {{ border-left: 4px solid #28a745; }}
-  .issue-card.closed {{ border-left: 4px solid #d73a49; }}
+  .issue-card:hover {{
+    transform: translate(4px, 4px);
+    box-shadow: none;
+  }}
+  .issue-card.open {{
+    border-left: 8px solid #dc2626;
+  }}
+  .issue-card.closed {{
+    border-left: 8px solid #facc15;
+  }}
   
   .issue-header h2 {{ 
-    margin: 0 0 0.75rem 0; display: flex; align-items: center; gap: 0.5rem;
+    margin: 0 0 1rem 0; 
+    display: flex; 
+    align-items: center; 
+    gap: 1rem;
+    font-size: 1.2rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+    overflow-x: hidden;
   }}
-  .issue-link {{ text-decoration: none; color: #24292e; flex: 1; }}
-  .issue-link:hover {{ color: #0366d6; }}
+  .issue-link {{ 
+    text-decoration: none; 
+    color: #000000; 
+    flex: 1;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    max-width: 100%;
+    min-width: 0;
+  }}
+  .issue-link:hover {{ 
+    background: #000000;
+    color: #ffffff;
+    padding: 4px 8px;
+  }}
   
   .state-badge {{
-    font-size: 0.8rem; padding: 0.25rem 0.5rem; 
-    border-radius: 12px; white-space: nowrap;
+    font-size: 0.7rem; 
+    padding: 0.5rem 0.8rem; 
+    white-space: nowrap;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border: 2px solid #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+    font-family: 'JetBrains Mono', monospace;
   }}
-  .state-badge.open {{ background: #dcffe4; color: #28a745; }}
-  .state-badge.closed {{ background: #ffeef0; color: #d73a49; }}
+  .state-badge.open {{ 
+    background: #dc2626;
+    color: #ffffff;
+    border-color: #dc2626;
+  }}
+  .state-badge.closed {{ 
+    background: #facc15;
+    color: #000000;
+    border-color: #facc15;
+  }}
   
-  .issue-meta {{ color: #586069; font-size: 0.9rem; margin-bottom: 0.75rem; }}
-  .labels {{ margin: 0.75rem 0; }}
+  .issue-meta {{ 
+    color: #000000; 
+    font-size: 0.8rem; 
+    margin-bottom: 1rem;
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+  }}
+  .labels {{ margin: 1rem 0; }}
   .label {{ 
-    display: inline-block; padding: 0.25rem 0.5rem; 
-    border-radius: 12px; font-size: 0.75rem; font-weight: 500;
-    margin-right: 0.5rem; margin-bottom: 0.25rem;
+    display: inline-block; 
+    padding: 0.4rem 0.6rem; 
+    font-size: 0.7rem; 
+    font-weight: 900;
+    margin-right: 0.5rem; 
+    margin-bottom: 0.5rem;
+    border: 2px solid #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+    word-wrap: break-word;
   }}
-  .milestone {{ color: #586069; font-size: 0.9rem; margin: 0.5rem 0; }}
+  .milestone {{ 
+    color: #000000; 
+    font-size: 0.8rem; 
+    margin: 0.8rem 0;
+    font-weight: 900;
+    padding: 0.5rem 1rem;
+    background: #facc15;
+    border: 2px solid #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+    display: inline-block;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+  }}
   
-  .issue-body {{ margin: 1rem 0; }}
+  .issue-body {{ 
+    margin: 1rem 0; 
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: #000000;
+    font-weight: bold;
+    overflow-x: hidden;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }}
+  .issue-body.collapsed {{
+    max-height: 200px;
+    overflow: hidden;
+    position: relative;
+  }}
+  .issue-body.collapsed::after {{
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 50px;
+    width: 100%;
+    background: linear-gradient(transparent, #ffffff);
+    pointer-events: none;
+  }}
+  .read-more-btn {{
+    background: #facc15;
+    border: 2px solid #000000;
+    padding: 0.5rem 1rem;
+    margin: 0.5rem 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 900;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    color: #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+  }}
+  .read-more-btn:hover {{
+    background: #000000;
+    color: #ffffff;
+    transform: translate(1px, 1px);
+    box-shadow: none;
+  }}
   .issue-body p:first-child {{ margin-top: 0; }}
   .issue-body p:last-child {{ margin-bottom: 0; }}
+  .issue-body h1, .issue-body h2, .issue-body h3 {{ 
+    color: #000000; 
+    margin-top: 1.5rem; 
+    margin-bottom: 0.8rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }}
+  .issue-body ul, .issue-body ol {{ padding-left: 1.5rem; }}
+  .issue-body li {{ margin: 0.3rem 0; }}
+  .issue-body pre {{ max-width: 100%; overflow-x: auto; }}
+  .issue-body code {{ max-width: 100%; overflow-wrap: break-word; }}
+  .issue-body img {{ max-width: 100%; height: auto; }}
   
   .comments {{ margin-top: 1.5rem; }}
-  .comments h4 {{ color: #586069; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.5rem; }}
-  .comment {{ 
-    background: #f6f8fa; border: 1px solid #e1e4e8;
-    border-radius: 6px; padding: 1rem; margin: 0.75rem 0;
+  .comments h4 {{ 
+    color: #000000; 
+    border-bottom: 4px solid #000000;
+    padding-bottom: 0.5rem;
+    font-size: 1rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-family: 'JetBrains Mono', monospace;
   }}
-  .comment-meta {{ color: #586069; font-size: 0.9rem; margin-bottom: 0.5rem; }}
+  .comment {{ 
+    background: #ffffff;
+    border: 2px solid #000000;
+    padding: 1rem; 
+    margin: 1rem 0;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+    overflow-x: hidden;
+    word-wrap: break-word;
+  }}
+  .comment-meta {{ 
+    color: #000000; 
+    font-size: 0.8rem; 
+    margin-bottom: 0.5rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+  }}
   
-  .back-top {{ margin-top: 1rem; font-size: 0.9rem; }}
-  .back-top a {{ color: #586069; text-decoration: none; }}
-  .back-top a:hover {{ color: #0366d6; }}
+  .back-top {{ 
+    margin-top: 1rem; 
+    font-size: 0.8rem;
+    text-align: center;
+  }}
+  .back-top a {{ 
+    color: #000000; 
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    background: #facc15;
+    border: 2px solid #000000;
+    box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
+  }}
+  .back-top a:hover {{ 
+    background: #000000;
+    color: #ffffff;
+    transform: translate(1px, 1px);
+    box-shadow: none;
+  }}
   
   /* LLM view */
   #llm-view {{ display: none; }}
   #llm-text {{
     width: 100%;
     height: 70vh;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 0.85em;
-    border: 1px solid #d1d5da;
-    border-radius: 6px;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8em;
+    border: 4px solid #000000;
     padding: 1rem;
     resize: vertical;
-    background: #f6f8fa;
+    background: #ffffff;
+    box-shadow: 8px 8px 0px 0px rgba(0,0,0,1);
+    font-weight: bold;
+    color: #000000;
+    overflow-x: hidden;
   }}
   .copy-hint {{
-    margin-top: 0.5rem;
-    color: #586069;
-    font-size: 0.9em;
+    margin-top: 1rem;
+    color: #000000;
+    font-size: 0.8rem;
+    text-align: center;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'JetBrains Mono', monospace;
   }}
   
   /* Code styling */
-  pre {{ background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }}
-  code {{ 
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    background: #f6f8fa; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.9em;
+  pre {{ 
+    background: #ffffff;
+    padding: 1rem; 
+    overflow-x: auto;
+    border: 2px solid #000000;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+    max-width: 100%;
+    overflow-wrap: break-word;
   }}
-  pre code {{ background: none; padding: 0; }}
+  code {{ 
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background: #facc15; 
+    padding: 0.2rem 0.4rem; 
+    font-size: 0.8em;
+    color: #000000;
+    font-weight: bold;
+    border: 1px solid #000000;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }}
+  pre code {{ background: none; padding: 0; color: #000000; border: none; }}
   
   blockquote {{ 
-    border-left: 4px solid #ddd; margin: 1rem 0; 
-    padding-left: 1rem; color: #586069; 
+    border-left: 8px solid #000000; 
+    margin: 1rem 0; 
+    padding: 1rem; 
+    color: #000000;
+    background: #facc15;
+    border-top: 2px solid #000000;
+    border-bottom: 2px solid #000000;
+    border-right: 2px solid #000000;
+    font-weight: bold;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
   }}
   
-  :target {{ scroll-margin-top: 20px; }}
+  :target {{ 
+    scroll-margin-top: 20px;
+    animation: highlight 1s ease-in-out;
+  }}
+  
+  @keyframes highlight {{
+    0% {{ background: #facc15; transform: scale(1.02); }}
+    100% {{ background: transparent; transform: scale(1); }}
+  }}
+  
+  /* Mobile sidebar toggle button */
+  .mobile-menu-toggle {{
+    display: none;
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 1001;
+    background: #000000;
+    color: #ffffff;
+    border: 4px solid #000000;
+    padding: 0.8rem;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 0.8rem;
+    box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+  }}
+  .mobile-menu-toggle:hover {{
+    background: #facc15;
+    color: #000000;
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }}
+  .mobile-menu-toggle.active {{
+    background: #facc15;
+    color: #000000;
+  }}
+
+  /* Sidebar overlay for mobile */
+  .sidebar-overlay {{
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+  }}
+
+  /* Responsive design */
+  @media (max-width: 1024px) {{
+    #sidebar {{ 
+      padding: 0.8rem; 
+      width: 250px;
+    }}
+    main.container {{ margin-left: 250px; }}
+    .header h1 {{ font-size: 1.8rem; }}
+  }}
   
   @media (max-width: 768px) {{
-    .page {{ grid-template-columns: 1fr; }}
-    #sidebar {{ position: relative; height: auto; }}
+    .mobile-menu-toggle {{ display: block; }}
+    
+    .page {{ 
+      max-width: 100%;
+      margin: 0;
+    }}
+    
+    #sidebar {{ 
+      position: fixed;
+      top: 0;
+      left: -300px; /* Hidden by default */
+      width: 280px;
+      height: 100vh;
+      overflow-y: auto;
+      background: #000000;
+      border-right: 4px solid #000000;
+      padding: 4rem 1rem 1rem 1rem; /* Top padding for menu toggle */
+      box-shadow: 8px 0px 0px 0px rgba(0,0,0,1);
+      z-index: 1000;
+      transition: left 0.3s ease-in-out;
+    }}
+    
+    #sidebar.open {{
+      left: 0; /* Show sidebar */
+    }}
+    
+    .sidebar-overlay.active {{
+      display: block;
+    }}
+    
+    main.container {{
+      margin-left: 0;
+      width: 100%;
+      border-left: none;
+      padding: 1rem;
+    }}
+    
+    .header {{ 
+      padding: 1rem; 
+      padding-top: 4rem; /* Space for menu toggle */
+    }}
+    .header h1 {{ font-size: 1.6rem; }}
+    .stats {{ justify-content: flex-start; }}
+    .filter-chips {{ justify-content: flex-start; }}
+    .issue-card {{ 
+      padding: 1rem;
+      margin-bottom: 0.8rem;
+    }}
+    .issue-header h2 {{ 
+      font-size: 1rem;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }}
+    .issue-meta {{ flex-direction: column; gap: 0.3rem; }}
+    .nav-list a {{ font-size: 0.7rem; padding: 0.6rem; }}
+  }}
+  
+  @media (max-width: 480px) {{
+    .container {{ padding: 0 0.5rem; }}
+    #sidebar {{ 
+      padding: 4rem 0.8rem 0.8rem 0.8rem;
+      width: 260px;
+      left: -280px;
+    }}
+    #sidebar.open {{ left: 0; }}
+    main.container {{ padding: 0.8rem; }}
+    .header {{ padding: 1rem; padding-top: 4rem; }}
+    .header h1 {{ font-size: 1.4rem; }}
+    .issue-card {{ padding: 0.8rem; }}
+    .toggle-btn {{ 
+      padding: 0.5rem 0.8rem;
+      font-size: 0.7rem;
+    }}
+    .filter-chip {{
+      padding: 0.3rem 0.6rem;
+      font-size: 0.6rem;
+    }}
+    .stat {{ 
+      padding: 0.4rem 0.6rem;
+      font-size: 0.7rem;
+    }}
+    .mobile-menu-toggle {{
+      padding: 0.6rem;
+      font-size: 0.7rem;
+    }}
+    * {{ overflow-wrap: break-word; word-wrap: break-word; }}
   }}
 </style>
 </head>
 <body>
 <a id="top"></a>
 
+<!-- Mobile menu toggle button -->
+<button class="mobile-menu-toggle" onclick="toggleMobileMenu()">☰ MENU</button>
+
+<!-- Sidebar overlay for mobile -->
+<div class="sidebar-overlay" onclick="closeMobileMenu()"></div>
+
 <div class="page">
   <nav id="sidebar">
-    <div><a href="#top">↑ Back to top</a></div>
     {sidebar_nav}
   </nav>
 
   <main class="container">
     <div class="header">
-      <h1>📋 GitHub Issues</h1>
+      <h1>GITHUB ISSUES</h1>
       <div class="repo-info">
-        <strong>Repository:</strong> 
+        <strong>REPOSITORY:</strong> 
         <a href="{repo_url}" target="_blank">{html.escape(owner)}/{html.escape(repo)}</a>
       </div>
       <div class="stats">
-        <div class="stat open">🟢 {len(open_issues)} Open</div>
-        <div class="stat closed">🔴 {len(closed_issues)} Closed</div>
-        <div class="stat">📊 {len(issues)} Total</div>
+        <div class="stat open">{len(open_issues)} OPEN</div>
+        <div class="stat closed">{len(closed_issues)} CLOSED</div>
+        <div class="stat">{len(issues)} TOTAL</div>
+      </div>
+      <div class="search-container">
+        <input type="text" class="search-input" placeholder="SEARCH ISSUES..." oninput="searchIssues(this.value)" />
+      </div>
+      <div class="filter-chips">
+        <div class="chips-label"><strong>FILTER BY:</strong></div>
+        {filter_chips_html}
       </div>
     </div>
 
     <div class="view-toggle">
       <strong>View:</strong>
-      <button class="toggle-btn active" onclick="showHumanView()">👤 Human</button>
-      <button class="toggle-btn" onclick="showLLMView()">🤖 LLM</button>
+      <button class="toggle-btn active" onclick="showHumanView()">HUMAN VIEW</button>
+      <button class="toggle-btn" onclick="showLLMView()">LLM VIEW</button>
     </div>
 
     <div id="human-view">
@@ -610,6 +1225,282 @@ function showLLMView() {{
     textArea.select();
   }}, 100);
 }}
+
+function filterIssues(filterType) {{
+  console.log('Filter clicked:', filterType);
+  
+  // Remove active class from all chips
+  document.querySelectorAll('.filter-chip').forEach(chip => {{
+    chip.classList.remove('active');
+  }});
+  
+  // Add active class to the clicked chip - use event.target if available
+  if (typeof event !== 'undefined' && event.target) {{
+    event.target.classList.add('active');
+  }}
+  
+  // Clear search input
+  const searchInput = document.querySelector('.search-input');
+  if (searchInput) {{
+    searchInput.value = '';
+  }}
+  
+  // Get all issue cards
+  const issueCards = document.querySelectorAll('.issue-card');
+  console.log('Found', issueCards.length, 'issue cards');
+  
+  let visibleCount = 0;
+  
+  // Filter the cards
+  issueCards.forEach(card => {{
+    let shouldShow = false;
+    
+    if (filterType === 'all') {{
+      shouldShow = true;
+    }} else if (filterType === 'open') {{
+      shouldShow = card.classList.contains('open');
+    }} else if (filterType === 'closed') {{
+      shouldShow = card.classList.contains('closed');
+    }} else if (filterType.startsWith('label-')) {{
+      // Extract label name from filter type (remove 'label-' prefix)
+      const labelName = filterType.replace('label-', '').toLowerCase().replace(/-/g, ' ');
+      const labels = card.querySelectorAll('.label');
+      
+      labels.forEach(label => {{
+        const labelText = label.textContent.toLowerCase().trim();
+        if (labelText === labelName || labelText.includes(labelName) || labelName.includes(labelText)) {{
+          shouldShow = true;
+        }}
+      }});
+    }}
+    
+    // Show or hide the card
+    if (shouldShow) {{
+      card.style.display = 'block';
+      visibleCount++;
+    }} else {{
+      card.style.display = 'none';
+    }}
+  }});
+  
+  console.log('Showing', visibleCount, 'out of', issueCards.length, 'cards');
+  
+  // Update sidebar links
+  const sidebarLinks = document.querySelectorAll('.nav-list a');
+  sidebarLinks.forEach(link => {{
+    const href = link.getAttribute('href');
+    if (href && href.startsWith('#')) {{
+      const issueCard = document.querySelector(href);
+      if (issueCard) {{
+        const listItem = link.closest('li');
+        if (listItem) {{
+          listItem.style.display = issueCard.style.display;
+        }}
+      }}
+    }}
+  }});
+}}
+
+function searchIssues(searchTerm) {{
+  const issueCards = document.querySelectorAll('.issue-card');
+  const navLinks = document.querySelectorAll('.nav-list a');
+  
+  searchTerm = searchTerm.toLowerCase().trim();
+  
+  issueCards.forEach(card => {{
+    let shouldShow = false;
+    
+    if (searchTerm === '') {{
+      shouldShow = true;
+    }} else {{
+      // Search in title
+      const titleElement = card.querySelector('.issue-link');
+      if (titleElement && titleElement.textContent.toLowerCase().includes(searchTerm)) {{
+        shouldShow = true;
+      }}
+      
+      // Search in issue body
+      const bodyElement = card.querySelector('.issue-body');
+      if (bodyElement && bodyElement.textContent.toLowerCase().includes(searchTerm)) {{
+        shouldShow = true;
+      }}
+      
+      // Search in labels
+      const labels = card.querySelectorAll('.label');
+      labels.forEach(label => {{
+        if (label.textContent.toLowerCase().includes(searchTerm)) {{
+          shouldShow = true;
+        }}
+      }});
+      
+      // Search in issue number
+      const issueNumber = card.id.replace('issue-', '');
+      if (issueNumber.includes(searchTerm) || ('#' + issueNumber).includes(searchTerm)) {{
+        shouldShow = true;
+      }}
+    }}
+    
+    card.style.display = shouldShow ? 'block' : 'none';
+  }});
+  
+  // Update sidebar navigation
+  navLinks.forEach(link => {{
+    const issueId = link.getAttribute('href').substring(1);
+    const issueCard = document.getElementById(issueId);
+    if (issueCard) {{
+      link.style.display = issueCard.style.display;
+    }}
+  }});
+  
+  // Clear active filter chips when searching
+  if (searchTerm !== '') {{
+    document.querySelectorAll('.filter-chip').forEach(chip => {{
+      chip.classList.remove('active');
+    }});
+  }}
+}}
+
+function toggleReadMore(bodyId, button) {{
+  const bodyElement = document.getElementById(bodyId);
+  const isCollapsed = bodyElement.classList.contains('collapsed');
+  
+  if (isCollapsed) {{
+    bodyElement.classList.remove('collapsed');
+    button.textContent = 'READ LESS...';
+  }} else {{
+    bodyElement.classList.add('collapsed');
+    button.textContent = 'READ MORE...';
+  }}
+}}
+
+// Mobile sidebar functions
+function toggleMobileMenu() {{
+  console.log('toggleMobileMenu called');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.querySelector('.sidebar-overlay');
+  const toggleButton = document.querySelector('.mobile-menu-toggle');
+  
+  console.log('Elements found:', {{
+    sidebar: !!sidebar,
+    overlay: !!overlay,
+    toggleButton: !!toggleButton
+  }});
+  
+  if (sidebar && overlay && toggleButton) {{
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('active');
+    toggleButton.classList.toggle('active');
+    console.log('Sidebar is now:', sidebar.classList.contains('open') ? 'open' : 'closed');
+  }} else {{
+    console.error('Missing required elements for mobile menu toggle');
+  }}
+}}
+
+function closeMobileMenu() {{
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.querySelector('.sidebar-overlay');
+  const toggleButton = document.querySelector('.mobile-menu-toggle');
+  
+  sidebar.classList.remove('open');
+  overlay.classList.remove('active');
+  toggleButton.classList.remove('active');
+}}
+
+// Close mobile menu when clicking on a sidebar link
+function handleSidebarLinkClick() {{
+  // Only close on mobile screens
+  if (window.innerWidth <= 768) {{
+    closeMobileMenu();
+  }}
+}}
+
+// Close mobile menu when clicking outside or on a link
+document.addEventListener('click', function(e) {{
+  const sidebar = document.getElementById('sidebar');
+  const toggleButton = document.querySelector('.mobile-menu-toggle');
+  
+  // Close if clicking outside sidebar and toggle button (only on mobile)
+  if (window.innerWidth <= 768 && 
+      sidebar.classList.contains('open') && 
+      !sidebar.contains(e.target) && 
+      !toggleButton.contains(e.target) &&
+      !e.target.classList.contains('sidebar-overlay')) {{
+    closeMobileMenu();
+  }}
+}});
+
+// Handle window resize
+window.addEventListener('resize', function() {{
+  // Close mobile menu if resizing to desktop
+  if (window.innerWidth > 768) {{
+    closeMobileMenu();
+  }}
+}});
+
+// Initialize first filter chip as active and add click handlers
+document.addEventListener('DOMContentLoaded', function() {{
+  console.log('DOM Content Loaded - initializing filters');
+  
+  // Debug: Check if mobile elements exist
+  const mobileToggle = document.querySelector('.mobile-menu-toggle');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.querySelector('.sidebar-overlay');
+  
+  console.log('Mobile elements check:', {{
+    mobileToggle: !!mobileToggle,
+    sidebar: !!sidebar,
+    overlay: !!overlay
+  }});
+  
+  // Initialize first chip as active
+  const firstChip = document.querySelector('.filter-chip');
+  if (firstChip) {{
+    firstChip.classList.add('active');
+    console.log('Set first chip as active:', firstChip.textContent);
+  }} else {{
+    console.error('No filter chips found!');
+  }}
+  
+  // Add click handlers to sidebar links to close mobile menu
+  document.querySelectorAll('#sidebar a').forEach(link => {{
+    link.addEventListener('click', handleSidebarLinkClick);
+  }});
+  
+  // Add explicit click handlers to all filter chips as backup
+  document.querySelectorAll('.filter-chip').forEach(chip => {{
+    chip.addEventListener('click', function(e) {{
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Get filter type from onclick attribute or data-filter attribute
+      let filterType = this.getAttribute('data-filter');
+      
+      if (!filterType) {{
+        const onclickAttr = this.getAttribute('onclick');
+        if (onclickAttr) {{
+          const match = onclickAttr.match(/filterIssues\\([\"']([^\"']+)[\"']\\)/);
+          if (match) {{
+            filterType = match[1];
+          }}
+        }}
+      }}
+      
+      if (!filterType) {{
+        filterType = 'all';
+      }}
+      
+      console.log('Chip clicked:', this.textContent, 'Filter type:', filterType);
+      console.log('Available issue cards:', document.querySelectorAll('.issue-card').length);
+      
+      // Set global event for filterIssues function
+      window.currentEvent = e;
+      window.currentTarget = this;
+      
+      // Call filterIssues function
+      filterIssues(filterType);
+    }});
+  }});
+}});
 </script>
 </body>
 </html>'''
